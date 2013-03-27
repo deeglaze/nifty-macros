@@ -1,11 +1,15 @@
 #lang scribble/manual
 @(require scribble/eval 
+          racket/sandbox
           (for-label scribble/struct
                      "for-accumulate.rkt"
+                     racket/set
                      racket/base))
 @(declare-exporting "for-accumulate.rkt")
-@(define for-eval (make-base-eval))
-@(for-eval '(require (for-syntax racket/base)))
+@(define for-eval
+   (parameterize ([sandbox-output 'string]
+                  [sandbox-error-output 'string])
+         (make-evaluator 'racket/base #:requires (list 'racket/set "for-accumulate.rkt"))))
 
 @title[#:tag "for-accumulate"]{Defined accumulators for @racket[for]}
 
@@ -35,7 +39,7 @@ task, you can suppress some bindings from being in the return values
 of @racket[for/accumulate]. At least one accumulator must not be
 suppressed.
 
-@examples[
+@examples[#:eval for-eval
 (define-accumulator list
     [lst #:initial '() #:bind v #:inner (cons v lst) #:post (reverse lst)])
 (define-accumulator hash [h #:initial #hash() #:bind (k v) #:inner (hash-set h k v)])
@@ -74,7 +78,7 @@ there are non-suppressed identifiers for accumulators.
 Here @racket[for-clauses], @racket[body-or-break] and @racket[body] are the same as in @racket[for].
 @racket[for/accumulate] is backwards-compatible with @racket[for/fold].
 
-@examples[
+@examples[#:eval for-eval
 (for/accumulate ([#:type set]
                  [#:type hash (hash -1 1)])
     ([i 5])
