@@ -5,13 +5,19 @@
 ;; Allow mix and match of accumulation styles, like for/list and for/set
 ;; for two different accumulators.
 
-(require (for-syntax racket/base syntax/parse racket/syntax syntax/id-table))
+(require (for-syntax racket/base syntax/parse racket/syntax syntax/id-table racket/pretty))
 
 (begin-for-syntax
  (define for/fold-types (make-free-id-table))
 
  (define-syntax-class folding
-   #:attributes ((accs 1) (clauses 1) (binds 1) (inners 1) drop (suppresses 1) (posts 1))
+   #:attributes ((accs 1) ;; accumulator identifier used in inners
+                 (clauses 1) ;; constructed accumulator clauses for the for[*]/fold form (not iteration clauses!)
+                 (binds 1) ;; identifiers that stand for the positional value for the accumulator (used in inners)
+                 (inners 1) ;; transforming expression for accumulated value(s)
+                 drop ;; Should these accumulated values be dropped from the final result? (user specified)
+                 (suppresses 1) ;; Which bindings should be dropped? (accumulator specified)
+                 (posts 1)) ;; Transforming expressions for final values.
    (pattern [(~optional (~describe #:opaque "accumulator name(s)"
                                    (~or (~and g-acc:id (~bind [(g-accs 1) (list #'g-acc)]))
                                         (g-accs:id ...))))
@@ -46,15 +52,15 @@
             "Cannot specify initial value positionally and with #:initial."
             ;; TODO: error if type does not have an initial value and no initial values given.
             #:attr (accs 1) (or (attribute g-accs) accsv)
-            #:attr (clauses 1) (for/list ([acc (in-list accsv)]
+            #:attr (clauses 1) (for/list ([acc (in-list (or (attribute g-accs) accsv))]
                                           [init (in-list initsv)])
                                  #`[#,acc #,init])
             #:attr (suppresses 1) suppressesv
             #:attr (binds 1) bindsv
             ;; inner/post need to rebind the accumulator identifiers if they are given.
             #:attr (inners 1) (if (attribute g-accs)
-                                  (with-syntax ([(taccs ...) accsv])
-                                    (for/list ([inner (in-list innersv)])
+                                  (with-syntax ([(taccs ...) accsv]) ;; accumulators from definitions
+                                    (for/list ([inner (in-list innersv)]) 
                                       (and inner
                                            #`(let ([taccs g-accs] ...) #,inner))))
                                   innersv)
@@ -77,6 +83,7 @@
                       (~optional (~seq #:inner inner:expr))
                       ;; Suppressed bindings may post-process for side-effect and bind nothing.
                       (~optional (~seq #:post post:expr))) ...] ...)
+
      #:fail-unless (memv (syntax-local-context) '(top-level module))
      "Can only define for types at the (module) top-level"
      #:fail-unless (for/or ([s (in-list (attribute suppress))]) (not s))
@@ -89,6 +96,7 @@
                           [i (in-list (attribute init))])
                    (and s (not i)))
      "Suppressed bindings must have an initial value."
+
      (define num-exported (for/sum ([s (attribute suppress)] #:unless s) 1))
      (define value
        (list (attribute acc)
@@ -133,8 +141,11 @@
                            (for/or ([d (in-list (attribute accs.drop))]) d)
                            (for*/or ([ps (in-list (attribute accs.posts))]
                                      [p (in-list ps)]) p)))
+     ;; Only add (let-values ([(x ...) ...]) ...) if there is a need to transform them.
      (define has-inner? (for*/or ([is (in-list (attribute accs.inners))]
                                   [i (in-list is)]) i))
+     ;; Get the different accumulators, their defined and introduced bindings to muck
+     ;; with to get the scope right.
      (define split-expected-ids
        (for/list
            ([ss (in-list (attribute accs.suppresses))]
@@ -145,6 +156,7 @@
               [a (in-list as)]
               [bs (in-list bss)])
            (cond [s '()]
+                 ;; This is accumulated, so will be reversed. Reverse first to get right order.
                  [bs (reverse bs)]
                  [else (generate-temporaries (list a))]))))
      (define marked-split-expected-ids
@@ -153,6 +165,7 @@
             [as (in-list (attribute accs.accs))]
             [bss (in-list (attribute accs.binds))]
             [ses (in-list split-expected-ids)])
+         ;; Each accumulator gets an introducer to prevent binding clashes.
          (define intro (make-syntax-introducer))
          (for/list
              ([s (in-list ss)]
@@ -160,8 +173,8 @@
               [bs (in-list bss)]
               [se (in-list ses)])
            (cond [s '()]
-                 [bs (map intro se)]
-                 [else se]))))
+                 [bs (map intro se)] ;; mark given identifiers
+                 [else se])))) ;; already fresh
      (with-syntax ([(expected-ids ...) ;; dropped ids count
                     (for*/fold ([acc '()]) ([lsts (in-list (reverse marked-split-expected-ids))]
                                             [lst (in-list lsts)])
@@ -169,7 +182,7 @@
        (with-syntax ([(return-values ...)
                       (reverse
                        (for/fold ([acc '()])
-                           ([is (in-list (attribute accs.inners))]
+                           ([is (in-list (attribute accs.inners))] ;; should be wrapped appropriately
                             [ss (in-list (attribute accs.suppresses))]
                             [bss (in-list split-expected-ids)]
                             [sss (in-list marked-split-expected-ids)]
@@ -261,7 +274,7 @@
   (check equal?
          (call-with-values (λ ()
                               (for/accumulate ([#:type set]
-                                               [#:type hash])
+                                               [hh #:type hash])
                                               ([i 5])
                                               (values i i (- i))))
            list)
