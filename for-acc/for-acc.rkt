@@ -1,6 +1,6 @@
 #lang racket/base
 
-(provide for/accumulate for*/accumulate define-accumulator)
+(provide for/acc for*/acc define-accumulator)
 
 ;; Allow mix and match of accumulation styles, like for/list and for/set
 ;; for two different accumulators.
@@ -124,7 +124,7 @@
                (list inners ...)
                (list posts ...)))))]))
 
-(define-syntax (for/accumulate-aux stx)
+(define-syntax (for/acc-aux stx)
   (syntax-parse stx
     [(_ folder (accs:folding ...) guards
         (~and (~seq body-or-break ...)
@@ -244,10 +244,10 @@
                                  (cons (or p a) acc)))))))
              loop)))]))
 
-(define-syntax-rule (for/accumulate accs guards body1 body ...)
-  (for/accumulate-aux for/fold/derived accs guards body1 body ...))
-(define-syntax-rule (for*/accumulate accs guards body1 body ...)
-  (for/accumulate-aux for*/fold/derived accs guards body1 body ...))
+(define-syntax-rule (for/acc accs guards body1 body ...)
+  (for/acc-aux for/fold/derived accs guards body1 body ...))
+(define-syntax-rule (for*/acc accs guards body1 body ...)
+  (for/acc-aux for*/fold/derived accs guards body1 body ...))
 
 (define-accumulator list
   [lst #:initial '() #:bind v #:inner (cons v lst) #:post (reverse lst)])
@@ -265,7 +265,7 @@
     [lst #:initial '() #:bind v #:inner (cons v lst) #:post (reverse lst)])
 
   (check equal?
-         (for/accumulate ([#:type list]) ([i 10]) i)
+         (for/acc ([#:type list]) ([i 10]) i)
          (for/list ([i 10]) i))
 
   (define-accumulator append [lst #:initial '() #:bind v #:inner (append (reverse v) lst) #:post (reverse lst)])
@@ -273,7 +273,7 @@
 
   (check equal?
          (call-with-values (λ ()
-                              (for/accumulate ([#:type set]
+                              (for/acc ([#:type set]
                                                [hh #:type hash])
                                               ([i 5])
                                               (values i i (- i))))
@@ -283,7 +283,7 @@
 
   (check equal?
          (call-with-values (λ ()
-                              (for/accumulate ([#:type sum]
+                              (for/acc ([#:type sum]
                                                [a '()]
                                                [#:type prod])
                                               ([i (in-range 1 5)])

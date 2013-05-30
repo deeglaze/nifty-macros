@@ -2,16 +2,16 @@
 @(require scribble/eval 
           racket/sandbox
           (for-label scribble/struct
-                     "for-accumulate.rkt"
+                     "for-acc.rkt"
                      racket/set
                      racket/base))
-@(declare-exporting "for-accumulate.rkt")
+@(declare-exporting "for-acc.rkt")
 @(define for-eval
    (parameterize ([sandbox-output 'string]
                   [sandbox-error-output 'string])
-         (make-evaluator 'racket/base #:requires (list 'racket/set "for-accumulate.rkt"))))
+         (make-evaluator 'racket/base #:requires (list 'racket/set "for-acc.rkt"))))
 
-@title[#:tag "for-accumulate"]{Defined accumulators for @racket[for]}
+@title[#:tag "for-acc"]{Defined accumulators for @racket[for]}
 
 This library provides support for combining different accumulator
 styles in the same form. For example, @racket[for/sum] and
@@ -36,7 +36,7 @@ to accumulate the value that corresponds to its position, optionally named with 
 
 If an accumulation style requires several accumulators to perform the
 task, you can suppress some bindings from being in the return values
-of @racket[for/accumulate]. At least one accumulator must not be
+of @racket[for/acc]. At least one accumulator must not be
 suppressed.
 
 @examples[#:eval for-eval
@@ -46,7 +46,7 @@ suppressed.
 (define-accumulator union [st #:initial (set) #:bind v #:inner (set-union v st)])
 ]}
 
-@defform/subs[(for/accumulate (accumulator ...) for-clauses body-or-break ... body)
+@defform/subs[(for/acc (accumulator ...) for-clauses body-or-break ... body)
               ([accumulator [id initial-expr]
                             [optional-ids kw-optionals optional-initial-expr]]
                [optional-ids (code:line)
@@ -70,29 +70,29 @@ initial values, @racket[#:initial] must be used.
 
 An @racket[accumulator] that also has @racket[#:drop] specified will
 not return the values of the accumulators as part of the values of the
-entire @racket[for/accumulate] form.
+entire @racket[for/acc] form.
 
 The @racket[body] expression is expected to return as many values as
 there are non-suppressed identifiers for accumulators.
 
 Here @racket[for-clauses], @racket[body-or-break] and @racket[body] are the same as in @racket[for].
-@racket[for/accumulate] is backwards-compatible with @racket[for/fold].
+@racket[for/acc] is backwards-compatible with @racket[for/fold].
 
 @examples[#:eval for-eval
-(for/accumulate ([#:type set]
+(for/acc ([#:type set]
                  [#:type hash (hash -1 1)])
     ([i 5])
   (values i i (- i)))
-(for/accumulate ([#:type sum]
+(for/acc ([#:type sum]
                  [a '()]
                  [#:type prod])
     ([i (in-range 1 5)])
   (values i (cons i a) i))
 ]}
 
-@defform[(for*/accumulate (accumulator ...) for-clauses body-or-break ... body)]{
+@defform[(for*/acc (accumulator ...) for-clauses body-or-break ... body)]{
 
-Like @racket[for/accumulate], but uses @racket[for*/fold] as the base
+Like @racket[for/acc], but uses @racket[for*/fold] as the base
 iteration form. Backwards-compatible with @racket[for*/fold].}
 
 @close-eval[for-eval]
