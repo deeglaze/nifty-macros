@@ -1,4 +1,4 @@
-Defined accumulators for `for`
+# Defined accumulators for `for`
 
 This library provides support for combining different accumulator styles
 in the same form. For example, `for/sum` and `for/list` can be combined
@@ -55,18 +55,24 @@ optional-initial-expr =
                                                                          
 kw-optionals          = #:type style-id                                  
                       | #:initial initial-expr/s                         
+                      | #:named-initial ([id initial-expr] ...)          
                       | #:drop                                           
                                                                          
 initial-expr/s        = initial-expr                                     
-                      | (initial-expr ...)                               
+                      | (values initial-expr ...)                        
 ```
 
-Restrictions: an accumulator without `#:type` in `kw-optionals` must be
-given in the first form of `accumulator`. If `id` is specified, there
-must be the same number of identifiers as non-suppressed identifiers for
-the accumulator style. This restriction also exists for `#:initial`, and
-additionally, if a style does not give default initial values,
-`#:initial` must be used.
+A defined accumulator may be used with the `#:type` form. If
+`optional-ids` are given with `#:type`, then there must be as many given
+identifiers as there are non-supressed accumulator identifiers defined
+in the accumulation style. If the `#:initial` form is given, there must
+be as many expressions assigning initial values as there are
+non-supressed accumulator identifiers. To otherwise partially specify
+initial values, the `#:named-initial` form may be used. Any named
+accumulator for initial values must either be given in `optional-ids`,
+or be `free-identifier=?` to an accumulator identifier defined in the
+accumulation style. It is a syntax error to not specify initial values
+for accumulators which do not have predefined initial values.
 
 An `accumulator` that also has `#:drop` specified will not return the
 values of the accumulators as part of the values of the entire `for/acc`
@@ -79,21 +85,22 @@ Here `for-clauses`, `body-or-break` and `body` are the same as in `for`.
 `for/acc` is backwards-compatible with `for/fold`.
 
 ```racket
-Examples:                                                        
-> (for/acc ([#:type set]                                         
-                   [#:type hash (hash -1 1)])                    
-      ([i 5])                                                    
-    (values i i (- i)))                                          
-(set        '#hash((0 . #t) (1 . #t) (2 . #t) (3 . #t) (4 . #t)))
-'#hash((0 . 0) (1 . -1) (2 . -2) (3 . -3) (4 . -4))              
-> (for/acc ([#:type sum]                                         
-                   [a '()]                                       
-                   [#:type prod])                                
-      ([i (in-range 1 5)])                                       
-    (values i (cons i a) i))                                     
-10                                                               
-'(4 3 2 1)                                                       
-24                                                               
+Examples:                                                             
+> (for/acc ([#:type set]                                              
+            [#:type hash (hash -1 1)])                                
+      ([i 5])                                                         
+    (values i i (- i)))                                               
+(immutable-custom-set  #f       '#hash((0 . #t) (1 . #t) (2 . #t) (3 .
+#t) (4 . #t)))                                                        
+'#hash((0 . 0) (1 . -1) (2 . -2) (3 . -3) (4 . -4))                   
+> (for/acc ([#:type sum]                                              
+                   [a '()]                                            
+                   [#:type prod])                                     
+      ([i (in-range 1 5)])                                            
+    (values i (cons i a) i))                                          
+10                                                                    
+'(4 3 2 1)                                                            
+24                                                                    
 ```
 
 ```racket
@@ -102,3 +109,29 @@ Examples:
 
 Like `for/acc`, but uses `for*/fold` as the base iteration form.
 Backwards-compatible with `for*/fold`.
+
+```racket
+(let/for/acc ((accumulator ...) for-clauses body-or-break ... body) lbody ...)
+```
+
+Runs `(lbody ...)` in the context of only non-suppressed identifiers of
+the accumulation.
+
+```racket
+(let/for*/acc ((accumulator ...) for-clauses body-or-break ... body) lbody ...)
+```
+
+Like `let/for/acc`, but uses `for*/acc`.
+
+```racket
+(define/for/acc (accumulator ...) for-clauses body-or-break ... body)
+```
+
+Like `let/for/acc`, but defines the non-suppressed accumulators within
+the current internal-definition-context.
+
+```racket
+(define/for*/acc (accumulator ...) for-clauses body-or-break ... body)
+```
+
+Like `define/for/acc`, but uses `for*/acc`.
