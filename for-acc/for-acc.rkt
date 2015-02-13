@@ -106,7 +106,8 @@
             "Accumulator without an accumulation type requires an initial value"
             #:fail-when (and (attribute inits) (attribute p-init))
             "Cannot specify initial value positionally and with #:initial."
-            #:fail-when (and (attribute p-init) (> (length (attribute g-accs)) 1))
+            #:do [(define num-g-accs (length (or (attribute g-accs) '())))]
+            #:fail-when (and (attribute p-init) (> num-g-accs 1))
             "Cannot give multiple initial values positionally. Must use #:initial (values v ...)"
             #:fail-when (and (attribute inits) (attribute acc-init))
             "Cannot specify initial value(s) positionally and by name."
@@ -133,7 +134,7 @@
                                                (generate-temporaries (list g))
                                                #f
                                                #f))
-                                (length (attribute g-accs)))))
+                                num-g-accs)))
                   (define named-dups (check-duplicate-identifier (or (attribute acc-init) '())))
                   (define unknown-named-inits
                     (if (attribute acc-init)
@@ -145,9 +146,9 @@
             (format "Duplicate named initial values for accumulators: ~a" named-dups)
             #:fail-unless (null? unknown-named-inits)
             (format "Initial value given for unknown accumulators: ~a" unknown-named-inits)
-            #:fail-unless (implies (attribute g-accs) (= (length (attribute g-accs)) num-exported))
+            #:fail-unless (implies (attribute g-accs) (= num-g-accs num-exported))
             (format "Type-exported bindings arity-mismatch in binders. Given ~a, expect ~a"
-                    (length (attribute g-accs)) num-exported)
+                    num-g-accs num-exported)
             #:fail-unless (implies (attribute inits) (= (length (attribute inits)) num-exported))
             (format "Type-exported bindings arity-mismatch in inital values. Given ~a, expect ~a"
                     (length (attribute inits)) num-exported)
