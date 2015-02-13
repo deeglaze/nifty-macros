@@ -33,7 +33,8 @@
                       (~optional (~seq #:initial init:expr))
                       ;; Give the body's result(s) for this position (a) name(s) to use in inner.
                       (~optional (~seq #:bind (~or (~and bind:id (~bind [(binds 1) (list #'bind)]))
-                                                   (binds:id ...))))
+                                                   (binds:id ...)))
+                                 #:defaults ([(binds 1) '()]))
                       (~optional (~seq #:inner inner:expr))
                       ;; Suppressed bindings may post-process for side-effect and bind nothing.
                       (~optional (~seq #:post post:expr))) ...] ...)
@@ -43,7 +44,7 @@
      "Cannot suppress all accumulators"
      #:fail-when (for/or ([s (in-list (attribute suppress?))]
                           [bs (in-list (attribute binds))])
-                   (and s bs))
+                   (and s (pair? bs)))
      "Suppressed bindings are hidden; cannot use #:bind."
      #:fail-when (for/or ([s (in-list (attribute suppress?))]
                           [i (in-list (attribute init))])
@@ -419,4 +420,17 @@
                                        ([i (in-range 1 5)])
                                        (values i (cons i a) i)))
            list)
-         (list 10 (list 4 3 2 1) 24)))
+         (list 10 (list 4 3 2 1) 24))
+
+  (define b (box #f))
+
+  (define-accumulator max
+    [m #:initial -inf.0 #:bind v #:inner (if (> v m) v m)]
+    [find #:initial #f #:inner (= m 8) #:suppress #:post (when find (set-box! b #t))])
+
+  (check equal?
+         (let ([max (for/acc ([#:type max]) ([x 6]) (* 2 x))])
+           (and (unbox b) max))
+         10)
+  
+)
