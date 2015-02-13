@@ -1,11 +1,15 @@
 #lang racket/base
 
-(provide for/acc for*/acc define-accumulator)
+(provide for/acc for*/acc
+         let/for/acc let/for*/acc
+         define/for/acc define/for*/acc
+         define-accumulator)
 
 ;; Allow mix and match of accumulation styles, like for/list and for/set
 ;; for two different accumulators.
 
 (require (for-syntax racket/base syntax/parse racket/syntax
+                     syntax/for-body
                      syntax/id-table
                      racket/pretty
                      (only-in racket/dict in-dict-keys)
@@ -16,13 +20,7 @@
  (define for/fold-types (make-free-id-table))
  ;; suppress/drop is (one-of 'suppress 'drop #f)
  (struct accumulator (id op-initial suppress/drop binds op-inner op-post) #:prefab)
- (struct folding-data (accumulators num-exported) #:prefab)
-#;
- (define (flatten-syntax stx)
-   (define lst (syntax->list stx))
-   (if lst
-       (map flatten-syntax lst)
-       stx)))
+ (struct folding-data (accumulators num-exported) #:prefab))
 
 ;; Each "accumulator" may have multiple accumulating bindings.
 (define-syntax (define-accumulator stx)
@@ -220,19 +218,22 @@
 
 (define-syntax (for/acc-aux stx)
   (syntax-parse stx
-    [(_ folder ((~var accss (folding stx)) ...) guards  
-        (~and (~seq body-or-break ...)
-              (~seq (~or (~seq #:break break:expr)
-                         (~seq #:final final:expr)
-                         body*:expr) ...))
-        body:expr)
+    [(_ folder
+        (~optional (~seq #:in-post-context in-post-form:id (in-post:expr ...)))
+        ((~var accss (folding stx)) ...) guards . unsplit-body)
+     (define/with-syntax ((pre-body ...) (post-body ...))
+       (split-for-body #'stx #'unsplit-body))
      ;; Suppressed bindings are hidden values of the iteration.
      ;; Suppressing/dropping bindings requires a let binding, as does post-processing.
      ;; Binding order is the order that values must be given in values.
-     (define has-post? (for*/or ([accs (in-list (attribute accss.accs))]
-                                 [acc (in-list accs)])
-                         (or (accumulator-suppress/drop acc)
-                             (accumulator-op-post acc))))
+     (define has-involved-post?
+       (for*/or ([accs (in-list (attribute accss.accs))]
+                 [acc (in-list accs)])
+         (or (accumulator-suppress/drop acc)
+             (accumulator-op-post acc))))
+     (define has-post?
+       (or (attribute in-post)
+           has-involved-post?))
      ;; Only add (let-values ([(x ...) ...]) ...) if there is a need to transform them.
      (define has-inner? (for*/or ([accs (in-list (attribute accss.accs))]
                                  [acc (in-list accs)])
@@ -263,9 +264,9 @@
          (define loop-body
            (if has-inner?
                (quasisyntax/loc stx
-                 (let-values ([(expected-ids ...) body])
+                 (let-values ([(expected-ids ...) (let () post-body ...)])
                    (values return-values ...)))
-               #'body))
+               #'(let () post-body ...)))
          (define loop
            (with-syntax ([(clauses ...)
                           (for*/list ([accs (in-list (attribute accss.accs))]
@@ -273,27 +274,46 @@
                             (quasisyntax/loc stx [#,(accumulator-id acc)
                                                   #,(accumulator-op-initial acc)]))])
             (quasisyntax/loc stx
-              (folder #,stx (clauses ...) guards body-or-break ... #,loop-body))))
+              (folder #,stx (clauses ...) guards pre-body ... #,loop-body))))
+         (define (general-post all-of-it)
+           (if (attribute in-post)
+               (quasisyntax/loc stx
+                 (in-post-form ([#,(for*/list
+                                       ([accs (in-list (attribute accss.accs))]
+                                        [acc (in-list accs)]
+                                        #:unless (accumulator-suppress/drop acc))
+                                     (accumulator-id acc))
+                                 #,all-of-it])
+                               in-post ...))
+               all-of-it))
          (if has-post?
              (with-syntax ([(aids ...) (for*/list ([accs (in-list (attribute accss.accs))]
                                                    [acc (in-list accs)])
                                          (accumulator-id acc))])
-               (quasisyntax/loc stx
-                 (let-values ([(aids ...) #,loop])
-                  ;; Suppressed bindings get their post-processing run for side-effect.
-                  #,@(for*/list
-                          ([accs (in-list (attribute accss.accs))]
-                           [acc (in-list accs)]
-                           #:when (and (accumulator-op-post acc)
-                                       (eq? 'suppress (accumulator-suppress/drop acc))))
-                       (accumulator-op-post acc))
-                  ;; Finally, only return unsuppressed/dropped accumulators.
-                  (values #,@(for*/list
-                                 ([accs (in-list (attribute accss.accs))]
-                                  [acc (in-list accs)]
-                                  #:unless (accumulator-suppress/drop acc))
-                                (or (accumulator-op-post acc)
-                                    (accumulator-id acc)))))))
+               (cond
+                [has-involved-post?
+                 (general-post
+                  (quasisyntax/loc stx
+                    (let-values ([(aids ...) #,loop])
+                      ;; Suppressed bindings get their post-processing run for side-effect.
+                      #,@(for*/list
+                             ([accs (in-list (attribute accss.accs))]
+                              [acc (in-list accs)]
+                              #:when (and (accumulator-op-post acc)
+                                          (eq? 'suppress (accumulator-suppress/drop acc))))
+                           (accumulator-op-post acc))
+                      ;; Finally, only return unsuppressed/dropped accumulators.
+                      (values #,@(for*/list
+                                     ([accs (in-list (attribute accss.accs))]
+                                      [acc (in-list accs)]
+                                      #:unless (accumulator-suppress/drop acc))
+                                   (or (accumulator-op-post acc)
+                                       (accumulator-id acc)))))))]
+
+                [else
+                 ;; Easy post. Just bind and go.
+                 (quasisyntax/loc stx (in-post-form ([(aids ...) #,loop]) in-post ...))]))
+             ;; No post. Just loop.
              loop)))]))
 
 (define-syntax-rule (for/acc accs guards body1 body ...)
@@ -303,18 +323,27 @@
 
 (define-syntax-rule (let/for/acc (accs guards body1 body ...)
                                  lbody1 lbody ...)
-  ???)
+  (for/acc-aux for/fold/derived
+               #:in-post-context let-values ((let () lbody1 lbody ...))
+               accs guards body1 body ...))
 (define-syntax-rule (let/for*/acc (accs guards body1 body ...)
                                  lbody1 lbody ...)
-  ???)
+  (for/acc-aux for*/fold/derived
+               #:in-post-context let-values ((let () lbody1 lbody ...))
+               accs guards body1 body ...))
 
-(define-syntax-rule (define/for/acc (accs guards body1 body ...)
-                                 lbody1 lbody ...)
-  ???)
+(define-syntax-rule (rejigger-post-to-define ([(id ...) e]))
+  (define-values (id ...) e))
 
-(define-syntax-rule (define/for*/acc (accs guards body1 body ...)
-                      lbody1 lbody ...)
-  ???)
+(define-syntax-rule (define/for/acc accs guards body1 body ...)
+  (for/acc-aux for/fold/derived
+               #:in-post-context rejigger-post-to-define ()
+               accs guards body1 body ...))
+
+(define-syntax-rule (define/for*/acc accs guards body1 body ...)
+  (for/acc-aux for*/fold/derived
+               #:in-post-context rejigger-post-to-define ()
+               accs guards body1 body ...))
 
 (define-accumulator list
   [lst #:initial '() #:bind v #:inner (cons v lst) #:post (reverse lst)])
@@ -339,12 +368,35 @@
   (check equal?
          (call-with-values
              (λ () (for/acc ([#:type list]
-                             [#:type list])
+                             [#:type list]
+                             [mumble #:drop 'bork])
                             ([i 10])
-                            (values i i)))
+                            (values i i 'bork)))
            list)
          (let ([v (for/list ([i 10]) i)])
            (list v v)))
+
+  ;; Tricky internal-definition-context test
+  (check equal?
+         (let ()
+           (define (post x) '(bork bork bork))
+           (for/acc ([#:type list])
+                    ([x 10])
+                    (define (pre x) (if (even? x) (post x) x))
+                    (begin
+                      (define (post y) (pre (add1 y)))
+                      (post x))))
+         (for/list ([i 10]) (if (even? (add1 i)) (+ 2 i) (add1 i))))
+
+  ;; Don't define dropped ids?
+  (check equal?
+         (let ()
+           (define bad 'already-here)
+           (define/for/acc ([l0 #:type list] [l1 #:type list] [bad #:drop 0])
+             ([x 10])
+             (values x x 0))
+           (list l0 l1))
+         (let ([v (for/list ([i 10]) i)]) (list v v)))
 
   (define-accumulator append [lst #:initial '() #:bind v #:inner (append (reverse v) lst) #:post (reverse lst)])
   (define-accumulator union [st #:initial (set) #:bind v #:inner (set-union v st)])

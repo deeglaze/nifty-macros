@@ -56,17 +56,17 @@ suppressed.
                                       initial-expr]
                [kw-optionals (code:line #:type style-id)
                              (code:line #:initial initial-expr/s)
+                             (code:line #:named-initial ([id initial-expr] ...))
                              (code:line #:drop)]
                [initial-expr/s initial-expr
-                               (initial-expr ...)])]{
+                               (values initial-expr ...)])]{
 
-Restrictions: an accumulator without @racket[#:type] in
-@racket[kw-optionals] must be given in the first form of
-@racket[accumulator]. If @racket[id] is specified, there must be the
-same number of identifiers as non-suppressed identifiers for the
-accumulator style. This restriction also exists for
-@racket[#:initial], and additionally, if a style does not give default
-initial values, @racket[#:initial] must be used.
+A defined accumulator may be used with the @racket[#:type] form.
+If @racket[optional-ids] are given with @racket[#:type], then there must be as many given identifiers as there are non-supressed accumulator identifiers defined in the accumulation style.
+If the @racket[#:initial] form is given, there must be as many expressions assigning initial values as there are non-supressed accumulator identifiers.
+To otherwise partially specify initial values, the @racket[#:named-initial] form may be used.
+Any named accumulator for initial values must either be given in @racket[optional-ids], or be @racket[free-identifier=?] to an accumulator identifier defined in the accumulation style.
+It is a syntax error to not specify initial values for accumulators which do not have predefined initial values.
 
 An @racket[accumulator] that also has @racket[#:drop] specified will
 not return the values of the accumulators as part of the values of the
@@ -80,7 +80,7 @@ Here @racket[for-clauses], @racket[body-or-break] and @racket[body] are the same
 
 @examples[#:eval for-eval
 (for/acc ([#:type set]
-                 [#:type hash (hash -1 1)])
+          [#:type hash (hash -1 1)])
     ([i 5])
   (values i i (- i)))
 (for/acc ([#:type sum]
@@ -94,5 +94,18 @@ Here @racket[for-clauses], @racket[body-or-break] and @racket[body] are the same
 
 Like @racket[for/acc], but uses @racket[for*/fold] as the base
 iteration form. Backwards-compatible with @racket[for*/fold].}
+
+@defform[(let/for/acc ((accumulator ...) for-clauses body-or-break ... body) lbody ...)]{
+Runs @racket[(lbody ...)] in the context of only non-suppressed identifiers of the accumulation.
+}
+
+@defform[(let/for*/acc ((accumulator ...) for-clauses body-or-break ... body) lbody ...)]{
+Like @racket[let/for/acc], but uses @racket[for*/acc].}
+
+@defform[(define/for/acc (accumulator ...) for-clauses body-or-break ... body)]{
+Like @racket[let/for/acc], but defines the non-suppressed accumulators within the current internal-definition-context.}
+
+@defform[(define/for*/acc (accumulator ...) for-clauses body-or-break ... body)]{
+Like @racket[define/for/acc], but uses @racket[for*/acc].}
 
 @close-eval[for-eval]
