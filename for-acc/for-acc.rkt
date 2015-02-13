@@ -5,77 +5,33 @@
 ;; Allow mix and match of accumulation styles, like for/list and for/set
 ;; for two different accumulators.
 
-(require (for-syntax racket/base syntax/parse racket/syntax syntax/id-table racket/pretty))
+(require (for-syntax racket/base syntax/parse racket/syntax
+                     syntax/id-table
+                     racket/pretty
+                     (only-in racket/dict in-dict-keys)
+                     (only-in racket/bool implies)
+                     racket/match))
 
 (begin-for-syntax
  (define for/fold-types (make-free-id-table))
+ ;; suppress/drop is (one-of 'suppress 'drop #f)
+ (struct accumulator (id op-initial suppress/drop binds op-inner op-post) #:prefab)
+ (struct folding-data (accumulators num-exported) #:prefab)
+#;
+ (define (flatten-syntax stx)
+   (define lst (syntax->list stx))
+   (if lst
+       (map flatten-syntax lst)
+       stx)))
 
- (define-syntax-class folding
-   #:attributes ((accs 1) ;; accumulator identifier used in inners
-                 (clauses 1) ;; constructed accumulator clauses for the for[*]/fold form (not iteration clauses!)
-                 (binds 1) ;; identifiers that stand for the positional value for the accumulator (used in inners)
-                 (inners 1) ;; transforming expression for accumulated value(s)
-                 drop ;; Should these accumulated values be dropped from the final result? (user specified)
-                 (suppresses 1) ;; Which bindings should be dropped? (accumulator specified)
-                 (posts 1)) ;; Transforming expressions for final values.
-   (pattern [(~optional (~describe #:opaque "accumulator name(s)"
-                                   (~or (~and g-acc:id (~bind [(g-accs 1) (list #'g-acc)]))
-                                        (g-accs:id ...))))
-             (~or (~optional (~seq #:type (~describe #:opaque "accumulation type" type:id)))
-                  (~optional (~and #:drop drop))
-                  (~optional (~seq #:initial (~describe #:opaque "initial value(s)"
-                                                        (~or (~and g-init:expr (~bind [(inits 1) (list #'g-init)]))
-                                                             (inits:expr ...)))))) ...
-             (~optional (~describe #:opaque "initial value" p-init:expr))]
-            #:fail-when (and (not (attribute type)) (not (attribute g-accs)))
-            "Accumulator without an accumulation type requires an identifier to bind"
-            #:fail-when (and (not (attribute type)) (not (or (attribute inits) (attribute p-init))))
-            "Accumulator without an accumulation type requires an initial value"
-            #:do [(define type-info
-                    (and (attribute type)
-                         (free-id-table-ref
-                          for/fold-types
-                          #'type
-                          (λ () (raise-syntax-error #f (format "Unknown accumulator type ~a" #'type) #'type)))))]
-            #:do [(define-values (accsv initsv num-exported suppressesv bindsv innersv postsv)
-                    (if type-info
-                        (apply values type-info)
-                        (values (attribute g-accs) (or (attribute inits) (list #'p-init))
-                                1 '(#f) '(#f) '(#f) '(#f))))]
-            #:fail-unless (or (not (attribute g-accs)) (= (length (attribute g-accs)) num-exported))
-            (format "Type-exported bindings arity-mismatch. Given ~a, expect ~a"
-                    (length (attribute g-accs)) num-exported)
-            #:fail-unless (or (not (attribute inits)) (= (length (attribute inits)) num-exported))
-            (format "Type-exported bindings arity-mismatch. Given ~a, expect ~a"
-                    (length (attribute inits)) num-exported)
-            #:fail-when (and (attribute inits) (attribute p-init))
-            "Cannot specify initial value positionally and with #:initial."
-            ;; TODO: error if type does not have an initial value and no initial values given.
-            #:attr (accs 1) (or (attribute g-accs) accsv)
-            #:attr (clauses 1) (for/list ([acc (in-list (or (attribute g-accs) accsv))]
-                                          [init (in-list initsv)])
-                                 #`[#,acc #,init])
-            #:attr (suppresses 1) suppressesv
-            #:attr (binds 1) bindsv
-            ;; inner/post need to rebind the accumulator identifiers if they are given.
-            #:attr (inners 1) (if (attribute g-accs)
-                                  (with-syntax ([(taccs ...) accsv]) ;; accumulators from definitions
-                                    (for/list ([inner (in-list innersv)]) 
-                                      (and inner
-                                           #`(let ([taccs g-accs] ...) #,inner))))
-                                  innersv)
-            #:attr (posts 1) (if (attribute g-accs)
-                                  (with-syntax ([(taccs ...) accsv])
-                                    (for/list ([post (in-list postsv)])
-                                      (and post
-                                           #`(let ([taccs g-accs] ...) #,post))))
-                                  postsv))))
-
+;; Each "accumulator" may have multiple accumulating bindings.
 (define-syntax (define-accumulator stx)
   (syntax-parse stx
     [(_ name:id [acc:id
                  ;; Helper identifiers won't be in the result of the for. Suppress them.
-                 (~or (~optional (~and #:suppress suppress))
+                 ;; They are not just dropped: they don't count for the number of values the body
+                 ;; should return.
+                 (~or (~optional (~and #:suppress suppress?))
                       (~optional (~seq #:initial init:expr))
                       ;; Give the body's result(s) for this position (a) name(s) to use in inner.
                       (~optional (~seq #:bind (~or (~and bind:id (~bind [(binds 1) (list #'bind)]))
@@ -83,128 +39,226 @@
                       (~optional (~seq #:inner inner:expr))
                       ;; Suppressed bindings may post-process for side-effect and bind nothing.
                       (~optional (~seq #:post post:expr))) ...] ...)
-
      #:fail-unless (memv (syntax-local-context) '(top-level module))
      "Can only define for types at the (module) top-level"
-     #:fail-unless (for/or ([s (in-list (attribute suppress))]) (not s))
+     #:fail-unless (for/or ([s (in-list (attribute suppress?))]) (not s))
      "Cannot suppress all accumulators"
-     #:fail-when (for/or ([s (in-list (attribute suppress))]
+     #:fail-when (for/or ([s (in-list (attribute suppress?))]
                           [bs (in-list (attribute binds))])
                    (and s bs))
      "Suppressed bindings are hidden; cannot use #:bind."
-     #:fail-when (for/or ([s (in-list (attribute suppress))]
+     #:fail-when (for/or ([s (in-list (attribute suppress?))]
                           [i (in-list (attribute init))])
                    (and s (not i)))
      "Suppressed bindings must have an initial value."
+     #:do [(define dups (check-duplicate-identifier (attribute acc)))]
+     #:fail-when dups
+     (format "Duplicate accumulator identifiers ~a" dups)
 
-     (define num-exported (for/sum ([s (attribute suppress)] #:unless s) 1))
-     (define value
-       (list (attribute acc)
-             (attribute init)
-             num-exported
-             (attribute suppress)
-             (attribute binds)
-             (attribute inner)
-             (attribute post)))
-     (define (listify lst)
-       (for/list ([i (in-list lst)])
-         (if i #`#'#,i #'#f)))
-     (with-syntax ([(inits ...) (listify (attribute init))]
-                   [(suppresss ...) (for/list ([s (in-list (attribute suppress))])
-                                       (if s #'#t #'#f))]
-                   [(inners ...) (listify (attribute inner))]
-                   [(posts ...) (listify (attribute post))])
-     #`(begin-for-syntax
-        (free-id-table-set!
-         for/fold-types
-         #'name
-         (list (list #'acc ...) (list inits ...) #,num-exported
-               (list suppresss ...)
-               (list (list #'binds ...) ...)
-               (list inners ...)
-               (list posts ...)))))]))
+     (define accumulators
+       (map accumulator
+            (attribute acc)
+            (attribute init)
+            (map syntax? (attribute suppress?))
+            (attribute binds)
+            (attribute inner)
+            (attribute post)))
+     (define num-exported (for/sum ([s (attribute suppress?)] #:unless s) 1))
+     (define (syntaxify a)
+       (match-define (accumulator id initial sd binds op-inner op-post) a)
+       (with-syntax ([(b ...) binds])
+        #`(accumulator #'#,id
+                       #'#,(or initial #'(quote #f))
+                       ;; can't define an accumulator with a drop quality. Only suppress.
+                       #,(and sd #'(quote suppress))
+                       (list #'b ...)
+                       #,(and op-inner #`(syntax #,op-inner))
+                       #,(and op-post #`(syntax #,op-post)))))
+     (with-syntax ([(a ...) (map syntaxify accumulators)])
+       #`(begin-for-syntax
+          (free-id-table-set! for/fold-types
+                              #'name
+                              (folding-data (list a ...) #,num-exported))))]))
+
+(begin-for-syntax
+ (define-syntax-class (folding orig-stx)
+   #:attributes ((accs 1) introducer)
+   (pattern [(~optional (~describe #:opaque "accumulator name(s)"
+                                   (~or (~and g-acc:id (~bind [(g-accs 1) (list #'g-acc)]))
+                                        (g-accs:id ...))))
+             (~or (~optional (~seq #:type (~describe #:opaque "accumulation type" type:id)))
+                  ;; suppressed accumulators cannot be named here, so no interface to it.
+                  (~optional (~and #:drop drop))
+                  (~optional (~seq #:initial
+                                   ;; TODO: kinda sucks syntactically requiring `values` 
+                                   (~describe #:opaque "initial value(s)"
+                                              (~or ((~literal values) inits:expr ...)
+                                                   (~and g-init:expr
+                                                         (~bind [(inits 1) (list #'g-init)]))))))
+                  (~optional (~seq #:named-initial
+                                   (~describe #:opaque "initial value(s) for given accumulators"
+                                              ([acc-init:id named-init:expr] ...)))))
+             ...
+             (~optional (~describe #:opaque "initial value" p-init:expr))]
+            #:fail-when (and (not (attribute type)) (not (attribute g-accs)))
+            "Accumulator without an accumulation type requires an identifier to bind"
+            #:fail-when (and (not (attribute type)) (not (or (attribute inits) (attribute p-init))))
+            "Accumulator without an accumulation type requires an initial value"
+            #:fail-when (and (attribute inits) (attribute p-init))
+            "Cannot specify initial value positionally and with #:initial."
+            #:fail-when (and (attribute p-init) (> (length (attribute g-accs)) 1))
+            "Cannot give multiple initial values positionally. Must use #:initial (values v ...)"
+            #:fail-when (and (attribute inits) (attribute acc-init))
+            "Cannot specify initial value(s) positionally and by name."
+            #:do [(define (bad)
+                    (raise-syntax-error #f (format "Unknown accumulator type ~a" (syntax-e #'type))
+                                        #'type))
+                  (define acc-ids (make-free-id-table))
+                  ;; Create first pass of accumulators used, either named or by #:type.
+                  (define-values (accumulators num-exported)
+                    (if (attribute type)
+                        (match (free-id-table-ref for/fold-types #'type bad)
+                          [(folding-data a n)
+                           ;; Populate names of accumulators.
+                           (for ([acc (in-list a)])
+                             (free-id-table-set! acc-ids (accumulator-id acc) #t))
+                           (values a n)])
+                        (values (for/list ([g (in-list (attribute g-accs))]
+                                           [i (in-list (or (attribute inits)
+                                                           (list (attribute p-init))))])
+                                  (free-id-table-set! acc-ids g #t)
+                                  (accumulator g
+                                               i
+                                               (and (attribute drop) 'drop)
+                                               (generate-temporaries (list g))
+                                               #f
+                                               #f))
+                                (length (attribute g-accs)))))
+                  (define named-dups (check-duplicate-identifier (or (attribute acc-init) '())))
+                  (define unknown-named-inits
+                    (if (attribute acc-init)
+                        (for/list ([aid (in-list (attribute acc-init))]
+                                   #:unless (free-id-table-ref acc-ids aid #f))
+                          aid)
+                        '()))]
+            #:fail-when named-dups
+            (format "Duplicate named initial values for accumulators: ~a" named-dups)
+            #:fail-unless (null? unknown-named-inits)
+            (format "Initial value given for unknown accumulators: ~a" unknown-named-inits)
+            #:fail-unless (implies (attribute g-accs) (= (length (attribute g-accs)) num-exported))
+            (format "Type-exported bindings arity-mismatch in binders. Given ~a, expect ~a"
+                    (length (attribute g-accs)) num-exported)
+            #:fail-unless (implies (attribute inits) (= (length (attribute inits)) num-exported))
+            (format "Type-exported bindings arity-mismatch in inital values. Given ~a, expect ~a"
+                    (length (attribute inits)) num-exported)
+
+            #:do [ ;; Associate initial expressions with accumulator identifier
+                  (define acc-init-table (make-free-id-table))
+                  ;; Initial values are given positionally or nominally?
+                  (cond
+                   [(attribute inits)
+                    (for ([acc (in-list accumulators)]
+                          [i (in-list (attribute inits))])
+                      (free-id-table-set! acc-init-table (accumulator-id acc) i))]
+                   [(attribute acc-init)
+                    ;; Nominally
+                    (for ([aid (in-list (attribute acc-init))]
+                          [i (in-list (attribute named-init))])
+                      (free-id-table-set! acc-init-table aid i))]
+                   ;; only initial values are the ones from the type itself.
+                   [else
+                    (for ([acc (in-list accumulators)])
+                      (free-id-table-set! acc-init-table
+                                          (accumulator-id acc) 
+                                          (accumulator-op-initial acc)))])
+                  ;; Find if we have filled in all the missing initial values
+                  (define undefined-initial-values
+                    (for/list ([aid (in-dict-keys acc-ids)]
+                               #:unless (free-id-table-ref acc-init-table aid #f))
+                      aid))]
+            #:fail-unless (null? undefined-initial-values)
+            (let* ([plural? (pair? (cdr undefined-initial-values))]
+                   [many (if plural? "s" "")])
+              (format "Accumulator~a ~a unspecified initial value~a"
+                      many (if plural? "have" "has") many))
+
+            #:do [ ;; If we don't give accumulator ids, we want a fresh accumulator id each time
+                  ;; we refer to the accumulation style
+                  ;; Example: (for/acc ([#:type list] [#:type list]) ([x 5]) (values x x))
+                  ;; => (values '(0 1 2 3 4) '(0 1 2 3 4))
+                  ;; Without the introducer, we have a duplicated identifier in the clauses.
+                  (define intro (make-syntax-introducer))
+                  (define new-accs
+                    (or (attribute g-accs)
+                        (map (compose intro accumulator-id) accumulators)))
+                  ;; We need to reinterpret user-given idents (or freshen idents) as the originals
+                  ;; in order for the looked-up syntax to match.
+                  (define (interp op-stx binds)
+                    (and op-stx
+                         (with-syntax ([(na ...) new-accs]
+                                       [(oa ...)
+                                        (map accumulator-id accumulators)]
+                                       [(ob ...) binds]
+                                       [(nb ...) (map intro binds)])
+                           (quasisyntax/loc orig-stx
+                              (let-syntax ([oa (make-rename-transformer #'na)] ...
+                                           [ob (make-rename-transformer #'nb)] ...)
+                                #,op-stx)))))]
+
+            #:attr (accs 1)
+            ;; Now override defaults with provided forms.
+            (for/list ([acc (in-list accumulators)]
+                       [aid (in-list new-accs)])
+              (match-define (accumulator id initial sd binds op-inner op-post) acc)
+              (accumulator aid initial
+                           (or sd (and (attribute drop) 'drop))
+                           (map intro binds)
+                           (interp op-inner binds)
+                           (interp op-post binds)))
+            #:attr introducer intro)))
 
 (define-syntax (for/acc-aux stx)
   (syntax-parse stx
-    [(_ folder (accs:folding ...) guards
+    [(_ folder ((~var accss (folding stx)) ...) guards  
         (~and (~seq body-or-break ...)
               (~seq (~or (~seq #:break break:expr)
                          (~seq #:final final:expr)
                          body*:expr) ...))
         body:expr)
      ;; Suppressed bindings are hidden values of the iteration.
-     ;; Dropping/suppressing bindings requires a let binding, as does post-processing.
+     ;; Suppressing/dropping bindings requires a let binding, as does post-processing.
      ;; Binding order is the order that values must be given in values.
-     (define has-post? (or (for*/or ([ss (in-list (attribute accs.suppresses))]
-                                     [s (in-list ss)])
-                             s)
-                           (for/or ([d (in-list (attribute accs.drop))]) d)
-                           (for*/or ([ps (in-list (attribute accs.posts))]
-                                     [p (in-list ps)]) p)))
+     (define has-post? (for*/or ([accs (in-list (attribute accss.accs))]
+                                 [acc (in-list accs)])
+                         (or (accumulator-suppress/drop acc)
+                             (accumulator-op-post acc))))
      ;; Only add (let-values ([(x ...) ...]) ...) if there is a need to transform them.
-     (define has-inner? (for*/or ([is (in-list (attribute accs.inners))]
-                                  [i (in-list is)]) i))
-     ;; Get the different accumulators, their defined and introduced bindings to muck
-     ;; with to get the scope right.
-     (define split-expected-ids
-       (for/list
-           ([ss (in-list (attribute accs.suppresses))]
-            [as (in-list (attribute accs.accs))]
-            [bss (in-list (attribute accs.binds))])
-         (for/list
-             ([s (in-list ss)]
-              [a (in-list as)]
-              [bs (in-list bss)])
-           (cond [s '()]
-                 ;; This is accumulated, so will be reversed. Reverse first to get right order.
-                 [bs (reverse bs)]
-                 [else (generate-temporaries (list a))]))))
-     (define marked-split-expected-ids
-       (for/list
-           ([ss (in-list (attribute accs.suppresses))]
-            [as (in-list (attribute accs.accs))]
-            [bss (in-list (attribute accs.binds))]
-            [ses (in-list split-expected-ids)])
-         ;; Each accumulator gets an introducer to prevent binding clashes.
-         (define intro (make-syntax-introducer))
-         (for/list
-             ([s (in-list ss)]
-              [a (in-list as)]
-              [bs (in-list bss)]
-              [se (in-list ses)])
-           (cond [s '()]
-                 [bs (map intro se)] ;; mark given identifiers
-                 [else se])))) ;; already fresh
+     (define has-inner? (for*/or ([accs (in-list (attribute accss.accs))]
+                                 [acc (in-list accs)])
+                          (accumulator-op-inner acc)))
      (with-syntax ([(expected-ids ...) ;; dropped ids count
-                    (for*/fold ([acc '()]) ([lsts (in-list (reverse marked-split-expected-ids))]
-                                            [lst (in-list lsts)])
-                      (append (reverse lst) acc))])
+                    (reverse
+                     (for*/fold ([ids '()]) ([accs (in-list (attribute accss.accs))])
+                       (for/fold ([ids ids]) ([acc (in-list accs)])
+                         (cond
+                          [(eq? (accumulator-suppress/drop acc) 'suppress) ids]
+                          ;; The binders should all have the introducer applied.
+                          [else (append (reverse (accumulator-binds acc)) ids)]))))])
        (with-syntax ([(return-values ...)
                       (reverse
-                       (for/fold ([acc '()])
-                           ([is (in-list (attribute accs.inners))] ;; should be wrapped appropriately
-                            [ss (in-list (attribute accs.suppresses))]
-                            [bss (in-list split-expected-ids)]
-                            [sss (in-list marked-split-expected-ids)]
-                            [as (in-list (attribute accs.accs))])
+                       (for*/fold ([rvs '()])
+                           ([accs (in-list (attribute accss.accs))]
+                            [acc (in-list accs)])
                          ;; If no inner expr given, then
                          ;; if binding suppressed, just use the accumulator identifier,
                          ;; otherwise, use the expected-id.
-                         (for/fold ([acc acc]) ([i (in-list is)]
-                                                [s (in-list ss)]
-                                                [bs (in-list bss)]
-                                                [ss (in-list sss)]
-                                                [a (in-list as)])
-                           (with-syntax ([(bs* ...) ss])
-                             (cond
-                              ;; Inner expressions should refer to the renamed binders.
-                              [i (cons (quasisyntax/loc stx
-                                         (let-syntaxes
-                                             ([#,bs (values (make-rename-transformer #'bs*) ...)])
-                                           #,i))
-                                       acc)]
-                              [s (cons a acc)]
-                              [else (append ss acc)])))))])
+                         (cond
+                          ;; Inner expressions should refer to the renamed binders.
+                          [(accumulator-op-inner acc) => (λ (i) (cons i rvs))]
+                          [(eq? 'suppress (accumulator-suppress/drop acc))
+                           (cons (accumulator-id acc) rvs)]
+                          [else
+                           (append (reverse (accumulator-binds acc)) rvs)])))])
          (define loop-body
            (if has-inner?
                (quasisyntax/loc stx
@@ -212,42 +266,54 @@
                    (values return-values ...)))
                #'body))
          (define loop
-           (quasisyntax/loc stx
-             (folder #,stx (accs.clauses ... ...) guards
-                     body-or-break ...
-                     #,loop-body)))
+           (with-syntax ([(clauses ...)
+                          (for*/list ([accs (in-list (attribute accss.accs))]
+                                      [acc (in-list accs)])
+                            (quasisyntax/loc stx [#,(accumulator-id acc)
+                                                  #,(accumulator-op-initial acc)]))])
+            (quasisyntax/loc stx
+              (folder #,stx (clauses ...) guards body-or-break ... #,loop-body))))
          (if has-post?
-             (quasisyntax/loc stx
-               (let-values ([(accs.accs ... ...) #,loop])
-                 ;; Suppressed bindings get their post-processing run for side-effect.
-                 #,@(reverse
-                     (for/fold ([acc '()])
-                         ([ps (in-list (attribute accs.posts))]
-                          [ss (in-list (attribute accs.suppresses))])
-                       (for/fold ([acc acc])
-                           ([p (in-list ps)]
-                            [s (in-list ss)]
-                            #:when s)
-                         (cons p acc))))
-                 (values #,@(reverse
-                             (for/fold ([acc '()])
-                                 ([ps (in-list (attribute accs.posts))]
-                                  [ss (in-list (attribute accs.suppresses))]
-                                  [as (in-list (attribute accs.accs))]
-                                  [d (in-list (attribute accs.drop))]
-                                  #:unless d)
-                               (for/fold ([acc acc])
-                                   ([p (in-list ps)]
-                                    [s (in-list ss)]
-                                    [a (in-list as)]
-                                    #:unless s)
-                                 (cons (or p a) acc)))))))
+             (with-syntax ([(aids ...) (for*/list ([accs (in-list (attribute accss.accs))]
+                                                   [acc (in-list accs)])
+                                         (accumulator-id acc))])
+               (quasisyntax/loc stx
+                 (let-values ([(aids ...) #,loop])
+                  ;; Suppressed bindings get their post-processing run for side-effect.
+                  #,@(for*/list
+                          ([accs (in-list (attribute accss.accs))]
+                           [acc (in-list accs)]
+                           #:when (and (accumulator-op-post acc)
+                                       (eq? 'suppress (accumulator-suppress/drop acc))))
+                       (accumulator-op-post acc))
+                  ;; Finally, only return unsuppressed/dropped accumulators.
+                  (values #,@(for*/list
+                                 ([accs (in-list (attribute accss.accs))]
+                                  [acc (in-list accs)]
+                                  #:unless (accumulator-suppress/drop acc))
+                                (or (accumulator-op-post acc)
+                                    (accumulator-id acc)))))))
              loop)))]))
 
 (define-syntax-rule (for/acc accs guards body1 body ...)
   (for/acc-aux for/fold/derived accs guards body1 body ...))
 (define-syntax-rule (for*/acc accs guards body1 body ...)
   (for/acc-aux for*/fold/derived accs guards body1 body ...))
+
+(define-syntax-rule (let/for/acc (accs guards body1 body ...)
+                                 lbody1 lbody ...)
+  ???)
+(define-syntax-rule (let/for*/acc (accs guards body1 body ...)
+                                 lbody1 lbody ...)
+  ???)
+
+(define-syntax-rule (define/for/acc (accs guards body1 body ...)
+                                 lbody1 lbody ...)
+  ???)
+
+(define-syntax-rule (define/for*/acc (accs guards body1 body ...)
+                      lbody1 lbody ...)
+  ???)
 
 (define-accumulator list
   [lst #:initial '() #:bind v #:inner (cons v lst) #:post (reverse lst)])
@@ -256,11 +322,12 @@
 (define-accumulator set [st #:initial (set) #:bind v #:inner (set-add st v)])
 (define-accumulator sum [sm #:initial 0 #:bind v #:inner (+ v sm)])
 (define-accumulator prod [pd #:initial 1 #:bind v #:inner (* v pd)])
+;; One accumulator that expects the body expression to return two values for it (positionally)
 (define-accumulator hash [h #:initial #hash() #:bind (k v) #:inner (hash-set h k v)])
-
 
 (module+ test
   (require rackunit racket/set)
+#;
   (define-accumulator list
     [lst #:initial '() #:bind v #:inner (cons v lst) #:post (reverse lst)])
 
@@ -268,15 +335,25 @@
          (for/acc ([#:type list]) ([i 10]) i)
          (for/list ([i 10]) i))
 
+  (check equal?
+         (call-with-values
+             (λ () (for/acc ([#:type list]
+                             [#:type list])
+                            ([i 10])
+                            (values i i)))
+           list)
+         (let ([v (for/list ([i 10]) i)])
+           (list v v)))
+
   (define-accumulator append [lst #:initial '() #:bind v #:inner (append (reverse v) lst) #:post (reverse lst)])
   (define-accumulator union [st #:initial (set) #:bind v #:inner (set-union v st)])
 
   (check equal?
          (call-with-values (λ ()
                               (for/acc ([#:type set]
-                                               [hh #:type hash])
-                                              ([i 5])
-                                              (values i i (- i))))
+                                        [hh #:type hash])
+                                       ([i 5])
+                                       (values i i (- i))))
            list)
          (list (set 0 1 2 3 4)
                (hash 0 0 1 -1 2 -2 3 -3 4 -4)))
@@ -284,9 +361,9 @@
   (check equal?
          (call-with-values (λ ()
                               (for/acc ([#:type sum]
-                                               [a '()]
-                                               [#:type prod])
-                                              ([i (in-range 1 5)])
-                                              (values i (cons i a) i)))
+                                        [a '()]
+                                        [#:type prod])
+                                       ([i (in-range 1 5)])
+                                       (values i (cons i a) i)))
            list)
          (list 10 (list 4 3 2 1) 24)))
