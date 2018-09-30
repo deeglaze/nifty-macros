@@ -1,10 +1,10 @@
 #Nifty Macros
 Collections of Racket macros I've found useful and general enough to share.
 
-Compatible with the (beta) package manager in version 5.3.4. Install with:
+Install with:
 
 ```bash
-raco pkg install github://github.com/ianj/nifty-macros/master
+raco pkg install github://github.com/deeglaze/nifty-macros/master
 ```
 Abstracts for individual collections:
 
